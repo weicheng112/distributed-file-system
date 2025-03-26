@@ -80,31 +80,13 @@ func GetAvailableDiskSpace(path string) (uint64, error) {
 		return 0, fmt.Errorf("path is not a directory")
 	}
 	
-	// For simplicity, we'll use a basic approach to estimate available space
+	// For a simplified implementation that still provides a realistic value,
+	// we'll allocate a fixed amount of space for each storage node
 	// In a real implementation, you would use OS-specific calls to get actual disk space
 	
-	// Create a temporary file to check available space
-	tmpFile := fmt.Sprintf("%s/space_check_%d", path, os.Getpid())
-	f, err := os.Create(tmpFile)
-	if err != nil {
-		return 0, fmt.Errorf("failed to create temporary file: %v", err)
-	}
-	defer func() {
-		f.Close()
-		os.Remove(tmpFile)
-	}()
-	
-	// Try to write increasing amounts until it fails
-	// This is a simplified approach and not recommended for production
-	var space uint64 = 1024 * 1024 // Start with 1MB
-	buffer := make([]byte, 1024)
-	for i := 0; i < 1024; i++ { // Limit to prevent excessive writes
-		_, err := f.Write(buffer)
-		if err != nil {
-			break
-		}
-		space += 1024
-	}
+	// Allocate 10GB of space for each storage node
+	// This is just a placeholder value for demonstration purposes
+	var space uint64 = 10 * 1024 * 1024 * 1024 // 10GB in bytes
 	
 	return space, nil
 }
