@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"strings"
 
 	"dfs/common"
 	pb "dfs/proto"
@@ -74,7 +75,13 @@ func (c *Client) storeChunk(filename string, chunkNum int, data []byte, nodes []
 	}
 
 	// Connect to primary storage node
-	conn, err := net.Dial("tcp", nodes[0])
+	// Ensure the node address includes the hostname
+	nodeAddr := nodes[0]
+	if !strings.Contains(nodeAddr, ":") {
+		nodeAddr = "localhost:" + nodeAddr
+	}
+	
+	conn, err := net.Dial("tcp", nodeAddr)
 	if err != nil {
 		return fmt.Errorf("failed to connect to storage node: %v", err)
 	}
@@ -191,7 +198,13 @@ func (c *Client) retrieveChunk(filename string, chunkNum int, nodes []string) ([
 // retrieveChunkFromNode retrieves a chunk from a specific storage node
 func (c *Client) retrieveChunkFromNode(filename string, chunkNum int, node string) ([]byte, error) {
 	// Connect to storage node
-	conn, err := net.Dial("tcp", node)
+	// Ensure the node address includes the hostname
+	nodeAddr := node
+	if !strings.Contains(nodeAddr, ":") {
+		nodeAddr = "localhost:" + nodeAddr
+	}
+	
+	conn, err := net.Dial("tcp", nodeAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to storage node: %v", err)
 	}
@@ -353,8 +366,8 @@ func (c *Client) requestNodeStatus() (*pb.NodeStatusResponse, error) {
 		return nil, fmt.Errorf("failed to read response: %v", err)
 	}
 
-	// The controller responds with the same message type as the request
-	if msgType != common.MsgTypeNodeStatusRequest {
+	// The controller responds with the corresponding response message type
+	if msgType != common.MsgTypeNodeStatusResponse {
 		return nil, fmt.Errorf("unexpected response type: %d", msgType)
 	}
 

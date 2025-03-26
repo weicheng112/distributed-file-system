@@ -5,10 +5,14 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"dfs/common"
+	pb "dfs/proto"
+	"google.golang.org/protobuf/proto"
 )
 
 // FileMetadata stores information about a file in the system
@@ -134,7 +138,24 @@ func (c *Controller) handleConnection(conn net.Conn) {
 
 		// Send response if one was generated
 		if response != nil {
-			if err := common.WriteMessage(conn, msgType, response); err != nil {
+			// Map request message types to their corresponding response types
+			var responseType byte
+			switch msgType {
+			case common.MsgTypeStorageRequest:
+				responseType = common.MsgTypeStorageResponse
+			case common.MsgTypeRetrievalRequest:
+				responseType = common.MsgTypeRetrievalResponse
+			case common.MsgTypeDeleteRequest:
+				responseType = common.MsgTypeDeleteResponse
+			case common.MsgTypeListRequest:
+				responseType = common.MsgTypeListResponse
+			case common.MsgTypeNodeStatusRequest:
+				responseType = common.MsgTypeNodeStatusResponse
+			default:
+				responseType = msgType
+			}
+			
+			if err := common.WriteMessage(conn, responseType, response); err != nil {
 				log.Printf("Error sending response: %v", err)
 				return
 			}
@@ -207,14 +228,245 @@ func (c *Controller) maintainReplication() {
 // replicateChunk ensures a chunk has the required number of replicas
 // This is called when a node fails or when the replication level is below the threshold
 func (c *Controller) replicateChunk(filename string, chunkNum int) {
-	// Implementation will be added for chunk replication
-	// This will coordinate with storage nodes to create new replicas
-	log.Printf("Replicating chunk %d of file %s", chunkNum, filename)
+	c.mu.Lock()
+	metadata, exists := c.files[filename]
+	if !exists {
+		c.mu.Unlock()
+		log.Printf("Cannot replicate chunk: file %s not found", filename)
+		return
+	}
 	
-	// In a real implementation, this would:
-	// 1. Find nodes that have the chunk
-	// 2. Select new nodes to store replicas
-	// 3. Coordinate the transfer of the chunk to new nodes
+	// Get current nodes that have this chunk
+	currentNodes, exists := metadata.Chunks[chunkNum]
+	if !exists {
+		c.mu.Unlock()
+		log.Printf("Cannot replicate chunk: chunk %d of file %s not found", chunkNum, filename)
+		return
+	}
+	
+	// If we already have enough replicas, no need to replicate
+	if len(currentNodes) >= c.replicationFactor {
+		c.mu.Unlock()
+		return
+	}
+	
+	// Select new nodes for replication
+	neededReplicas := c.replicationFactor - len(currentNodes)
+	newNodes := c.selectStorageNodes(metadata.ChunkSize)
+	
+	// Filter out nodes that already have the chunk
+	var availableNodes []string
+	for _, node := range newNodes {
+		hasChunk := false
+		for _, existingNode := range currentNodes {
+			if node == existingNode {
+				hasChunk = true
+				break
+			}
+		}
+		if !hasChunk {
+			availableNodes = append(availableNodes, node)
+			if len(availableNodes) >= neededReplicas {
+				break
+			}
+		}
+	}
+	
+	if len(availableNodes) == 0 {
+		c.mu.Unlock()
+		log.Printf("Cannot replicate chunk: no available nodes")
+		return
+	}
+	
+	// Get a source node that has the chunk
+	if len(currentNodes) == 0 {
+		c.mu.Unlock()
+		log.Printf("Cannot replicate chunk: no source nodes available")
+		return
+	}
+	sourceNode := currentNodes[0]
+	
+	// Update metadata with new nodes
+	for _, node := range availableNodes {
+		metadata.Chunks[chunkNum] = append(metadata.Chunks[chunkNum], node)
+	}
+	c.mu.Unlock()
+	
+	log.Printf("Replicating chunk %d of file %s from %s to %v",
+			   chunkNum, filename, sourceNode, availableNodes)
+	
+	// Coordinate replication by instructing the source node to send the chunk to new nodes
+	// In a production system, we would implement the actual coordination here
+	// For this implementation, we'll simulate the coordination by:
+	// 1. Retrieving the chunk from the source node
+	// 2. Sending it to each of the new nodes
+	
+	// Connect to source node
+	sourceAddr := sourceNode
+	if !strings.Contains(sourceAddr, ":") {
+		sourceAddr = "localhost:" + sourceAddr
+	}
+	
+	conn, err := net.Dial("tcp", sourceAddr)
+	if err != nil {
+		log.Printf("Failed to connect to source node %s: %v", sourceNode, err)
+		return
+	}
+	defer conn.Close()
+	
+	// Create retrieve request
+	request := &pb.ChunkRetrieveRequest{
+		Filename:    filename,
+		ChunkNumber: uint32(chunkNum),
+	}
+	
+	// Serialize request
+	requestData, err := proto.Marshal(request)
+	if err != nil {
+		log.Printf("Failed to marshal retrieve request: %v", err)
+		return
+	}
+	
+	// Send request
+	if err := common.WriteMessage(conn, common.MsgTypeChunkRetrieve, requestData); err != nil {
+		log.Printf("Failed to send retrieve request: %v", err)
+		return
+	}
+	
+	// Read response
+	msgType, responseData, err := common.ReadMessage(conn)
+	if err != nil {
+		log.Printf("Failed to read retrieve response: %v", err)
+		return
+	}
+	
+	if msgType != common.MsgTypeChunkRetrieve {
+		log.Printf("Unexpected response type from source node: %d", msgType)
+		return
+	}
+	
+	response := &pb.ChunkRetrieveResponse{}
+	if err := proto.Unmarshal(responseData, response); err != nil {
+		log.Printf("Failed to unmarshal retrieve response: %v", err)
+		return
+	}
+	
+	// Now send the chunk to each new node
+	for _, newNode := range availableNodes {
+		go func(node string) {
+			// Connect to new node
+			nodeAddr := node
+			if !strings.Contains(nodeAddr, ":") {
+				nodeAddr = "localhost:" + nodeAddr
+			}
+			
+			conn, err := net.Dial("tcp", nodeAddr)
+			if err != nil {
+				log.Printf("Failed to connect to new node %s: %v", node, err)
+				return
+			}
+			defer conn.Close()
+			
+			// Create store request
+			storeRequest := &pb.ChunkStoreRequest{
+				Filename:     filename,
+				ChunkNumber:  uint32(chunkNum),
+				Data:         response.Data,
+				ReplicaNodes: []string{}, // No further replication needed
+			}
+			
+			// Serialize request
+			storeRequestData, err := proto.Marshal(storeRequest)
+			if err != nil {
+				log.Printf("Failed to marshal store request: %v", err)
+				return
+			}
+			
+			// Send request
+			if err := common.WriteMessage(conn, common.MsgTypeChunkStore, storeRequestData); err != nil {
+				log.Printf("Failed to send store request: %v", err)
+				return
+			}
+			
+			// Read response
+			msgType, storeResponseData, err := common.ReadMessage(conn)
+			if err != nil {
+				log.Printf("Failed to read store response: %v", err)
+				return
+			}
+			
+			if msgType != common.MsgTypeChunkStore {
+				log.Printf("Unexpected response type from new node: %d", msgType)
+				return
+			}
+			
+			storeResponse := &pb.ChunkStoreResponse{}
+			if err := proto.Unmarshal(storeResponseData, storeResponse); err != nil {
+				log.Printf("Failed to unmarshal store response: %v", err)
+				return
+			}
+			
+			if !storeResponse.Success {
+				log.Printf("Failed to store chunk on new node %s: %s", node, storeResponse.Error)
+				return
+			}
+			
+			log.Printf("Successfully replicated chunk %d of file %s to node %s", chunkNum, filename, node)
+		}(newNode)
+	}
+}
+
+// printMetadataMap prints the entire metadata map for debugging purposes
+func (c *Controller) printMetadataMap() {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	
+	log.Println("==== CONTROLLER METADATA MAP ====")
+	log.Printf("Total Files: %d", len(c.files))
+	log.Printf("Total Nodes: %d", len(c.nodes))
+	
+	// Print node information
+	log.Println("\n--- STORAGE NODES ---")
+	for nodeID, info := range c.nodes {
+		log.Printf("Node: %s", nodeID)
+		log.Printf("  Address: %s", info.Address)
+		log.Printf("  Free Space: %d bytes (%.2f GB)", info.FreeSpace, float64(info.FreeSpace)/(1024*1024*1024))
+		log.Printf("  Requests Handled: %d", info.RequestsHandled)
+		log.Printf("  Last Heartbeat: %s", info.LastHeartbeat.Format(time.RFC3339))
+		log.Printf("  Chunks Stored: %d", countChunks(info.ReplicatedChunks))
+	}
+	
+	// Print file information
+	log.Println("\n--- FILES ---")
+	for filename, metadata := range c.files {
+		log.Printf("File: %s", filename)
+		log.Printf("  Size: %d bytes (%.2f MB)", metadata.Size, float64(metadata.Size)/(1024*1024))
+		log.Printf("  Chunk Size: %d bytes (%.2f MB)", metadata.ChunkSize, float64(metadata.ChunkSize)/(1024*1024))
+		log.Printf("  Number of Chunks: %d", len(metadata.Chunks))
+		log.Println("  Chunk Placements:")
+		
+		// Sort chunks by number for readability
+		chunkNumbers := make([]int, 0, len(metadata.Chunks))
+		for chunkNum := range metadata.Chunks {
+			chunkNumbers = append(chunkNumbers, chunkNum)
+		}
+		sort.Ints(chunkNumbers)
+		
+		for _, chunkNum := range chunkNumbers {
+			nodes := metadata.Chunks[chunkNum]
+			log.Printf("    Chunk %d: %v", chunkNum, nodes)
+		}
+	}
+	log.Println("==== END METADATA MAP ====")
+}
+
+// countChunks counts the total number of chunks stored on a node
+func countChunks(replicatedChunks map[string][]int) int {
+	count := 0
+	for _, chunks := range replicatedChunks {
+		count += len(chunks)
+	}
+	return count
 }
 
 func main() {

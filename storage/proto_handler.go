@@ -156,7 +156,13 @@ func (n *StorageNode) handleChunkRetrieve(data []byte) ([]byte, error) {
 // forwardChunk forwards a chunk to another storage node
 func (n *StorageNode) forwardChunk(nodeID string, filename string, chunkNum uint32, data []byte) error {
 	// Connect to replica node
-	conn, err := net.Dial("tcp", nodeID)
+	// Ensure the node address includes the hostname
+	nodeAddr := nodeID
+	if !strings.Contains(nodeAddr, ":") {
+		nodeAddr = "localhost:" + nodeAddr
+	}
+	
+	conn, err := net.Dial("tcp", nodeAddr)
 	if err != nil {
 		return fmt.Errorf("failed to connect to replica node: %v", err)
 	}
@@ -221,7 +227,13 @@ func (n *StorageNode) repairChunk(filename string, chunkNum int) error {
 		}
 
 		// Connect to replica
-		conn, err := net.Dial("tcp", replicaNode)
+		// Ensure the node address includes the hostname
+		nodeAddr := replicaNode
+		if !strings.Contains(nodeAddr, ":") {
+			nodeAddr = "localhost:" + nodeAddr
+		}
+		
+		conn, err := net.Dial("tcp", nodeAddr)
 		if err != nil {
 			continue
 		}

@@ -11,8 +11,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// We're now using the Protocol Buffer generated types from dfs/proto
-
 // handleHeartbeat processes a heartbeat message from a storage node
 // This updates the node's status and handles any new files reported
 func (c *Controller) handleHeartbeat(data []byte) error {
@@ -30,7 +28,7 @@ func (c *Controller) handleHeartbeat(data []byte) error {
 		// This is a new node
 		node = &NodeInfo{
 			ID:               heartbeat.NodeId,
-			Address:          heartbeat.NodeId, // Using ID as address for simplicity
+			Address:          "localhost:" + heartbeat.NodeId, // Prepend localhost to make a valid address
 			ReplicatedChunks: make(map[string][]int),
 		}
 		c.nodes[heartbeat.NodeId] = node
@@ -97,6 +95,19 @@ func (c *Controller) handleStorageRequest(data []byte) ([]byte, error) {
 		}
 		c.files[request.Filename].Chunks[int(chunkNum)] = nodes
 	}
+
+	// Print the metadata map for the file
+	// log.Printf("File %s metadata:", request.Filename)
+	// log.Printf("  Size: %d bytes", request.FileSize)
+	// log.Printf("  Chunk Size: %d bytes", request.ChunkSize)
+	// log.Printf("  Number of Chunks: %d", numChunks)
+	// log.Printf("  Chunk Placements:")
+	for chunkNum, nodes := range c.files[request.Filename].Chunks {
+		log.Printf("    Chunk %d: %v", chunkNum, nodes)
+	}
+	
+	// Print the entire metadata map
+	c.printMetadataMap()
 
 	// Serialize response
 	responseData, err := proto.Marshal(response)
