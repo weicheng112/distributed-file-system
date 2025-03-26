@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -416,58 +415,6 @@ func (c *Controller) replicateChunk(filename string, chunkNum int) {
 	}
 }
 
-// printMetadataMap prints the entire metadata map for debugging purposes
-func (c *Controller) printMetadataMap() {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	
-	log.Println("==== CONTROLLER METADATA MAP ====")
-	log.Printf("Total Files: %d", len(c.files))
-	log.Printf("Total Nodes: %d", len(c.nodes))
-	
-	// Print node information
-	log.Println("\n--- STORAGE NODES ---")
-	for nodeID, info := range c.nodes {
-		log.Printf("Node: %s", nodeID)
-		log.Printf("  Address: %s", info.Address)
-		log.Printf("  Free Space: %d bytes (%.2f GB)", info.FreeSpace, float64(info.FreeSpace)/(1024*1024*1024))
-		log.Printf("  Requests Handled: %d", info.RequestsHandled)
-		log.Printf("  Last Heartbeat: %s", info.LastHeartbeat.Format(time.RFC3339))
-		log.Printf("  Chunks Stored: %d", countChunks(info.ReplicatedChunks))
-	}
-	
-	// Print file information
-	log.Println("\n--- FILES ---")
-	for filename, metadata := range c.files {
-		log.Printf("File: %s", filename)
-		log.Printf("  Size: %d bytes (%.2f MB)", metadata.Size, float64(metadata.Size)/(1024*1024))
-		log.Printf("  Chunk Size: %d bytes (%.2f MB)", metadata.ChunkSize, float64(metadata.ChunkSize)/(1024*1024))
-		log.Printf("  Number of Chunks: %d", len(metadata.Chunks))
-		log.Println("  Chunk Placements:")
-		
-		// Sort chunks by number for readability
-		chunkNumbers := make([]int, 0, len(metadata.Chunks))
-		for chunkNum := range metadata.Chunks {
-			chunkNumbers = append(chunkNumbers, chunkNum)
-		}
-		sort.Ints(chunkNumbers)
-		
-		for _, chunkNum := range chunkNumbers {
-			nodes := metadata.Chunks[chunkNum]
-			log.Printf("    Chunk %d: %v", chunkNum, nodes)
-		}
-	}
-	log.Println("==== END METADATA MAP ====")
-}
-
-// countChunks counts the total number of chunks stored on a node
-func countChunks(replicatedChunks map[string][]int) int {
-	count := 0
-	for _, chunks := range replicatedChunks {
-		count += len(chunks)
-	}
-	return count
-}
 
 func main() {
 	listenPort := flag.Int("port", 8000, "Port to listen on")

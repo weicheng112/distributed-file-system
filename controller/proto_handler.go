@@ -96,18 +96,6 @@ func (c *Controller) handleStorageRequest(data []byte) ([]byte, error) {
 		c.files[request.Filename].Chunks[int(chunkNum)] = nodes
 	}
 
-	// Print the metadata map for the file
-	// log.Printf("File %s metadata:", request.Filename)
-	// log.Printf("  Size: %d bytes", request.FileSize)
-	// log.Printf("  Chunk Size: %d bytes", request.ChunkSize)
-	// log.Printf("  Number of Chunks: %d", numChunks)
-	// log.Printf("  Chunk Placements:")
-	for chunkNum, nodes := range c.files[request.Filename].Chunks {
-		log.Printf("    Chunk %d: %v", chunkNum, nodes)
-	}
-	
-	// Print the entire metadata map
-	c.printMetadataMap()
 
 	// Serialize response
 	responseData, err := proto.Marshal(response)
