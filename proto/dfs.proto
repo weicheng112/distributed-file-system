@@ -1,0 +1,118 @@
+syntax = "proto3";
+
+package dfs;
+
+option go_package = "./proto";
+
+// Message for heartbeat from storage node to controller
+message Heartbeat {
+  string node_id = 1;
+  uint64 free_space = 2;  // Available space in bytes
+  uint64 requests_processed = 3;
+  repeated string new_files = 4;  // Optional: new files stored since last heartbeat
+}
+
+// Message for storage request from client to controller
+message StorageRequest {
+  string filename = 1;
+  uint64 file_size = 2;
+  uint32 chunk_size = 3;  // Size of each chunk in bytes
+}
+
+// Message for storage response from controller to client
+message StorageResponse {
+  repeated ChunkPlacement chunk_placements = 1;
+  string error = 2;  // Empty if successful
+}
+
+// Defines where to store a chunk and its replicas
+message ChunkPlacement {
+  uint32 chunk_number = 1;
+  repeated string storage_nodes = 2;  // List of node IDs to store replicas
+}
+
+// Message for retrieval request from client to controller
+message RetrievalRequest {
+  string filename = 1;
+}
+
+// Message for retrieval response from controller to client
+message RetrievalResponse {
+  repeated ChunkLocation chunks = 1;
+  string error = 2;  // Empty if successful
+}
+
+// Defines where to find a chunk and its replicas
+message ChunkLocation {
+  uint32 chunk_number = 1;
+  repeated string storage_nodes = 2;  // List of node IDs that have the chunk
+}
+
+// Message for file deletion request
+message DeleteRequest {
+  string filename = 1;
+}
+
+// Message for file deletion response
+message DeleteResponse {
+  bool success = 1;
+  string error = 2;  // Empty if successful
+}
+
+// Message for listing files request
+message ListFilesRequest {}
+
+// Message for listing files response
+message ListFilesResponse {
+  repeated FileInfo files = 1;
+}
+
+// File information
+message FileInfo {
+  string filename = 1;
+  uint64 size = 2;
+  uint32 num_chunks = 3;
+}
+
+// Message for node status request
+message NodeStatusRequest {}
+
+// Message for node status response
+message NodeStatusResponse {
+  repeated NodeInfo nodes = 1;
+  uint64 total_space = 2;  // Total available space in cluster (bytes)
+}
+
+// Node information
+message NodeInfo {
+  string node_id = 1;
+  uint64 free_space = 2;
+  uint64 requests_processed = 3;
+}
+
+// Message for chunk storage request to storage node
+message ChunkStoreRequest {
+  string filename = 1;
+  uint32 chunk_number = 2;
+  bytes data = 3;
+  repeated string replica_nodes = 4;  // Nodes to forward replicas to
+}
+
+// Message for chunk storage response from storage node
+message ChunkStoreResponse {
+  bool success = 1;
+  string error = 2;  // Empty if successful
+}
+
+// Message for chunk retrieval request to storage node
+message ChunkRetrieveRequest {
+  string filename = 1;
+  uint32 chunk_number = 2;
+}
+
+// Message for chunk retrieval response from storage node
+message ChunkRetrieveResponse {
+  bytes data = 1;
+  bool corrupted = 2;
+  string error = 3;  // Empty if successful
+}
