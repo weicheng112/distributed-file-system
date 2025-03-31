@@ -186,12 +186,17 @@ func (c *Controller) handleNodeFailure(nodeID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	log.Printf("Processing failure of node %s", nodeID)
+
 	// Find all chunks that were stored on the failed node
 	affectedChunks := make(map[string][]int) // filename -> chunk numbers
 	for filename, metadata := range c.files {
 		for chunkNum, nodes := range metadata.Chunks {
-			for _, node := range nodes {
+			for i, node := range nodes {
 				if node == nodeID {
+					// Remove the failed node from the list
+					log.Printf("Removing node %s from chunk %d of file %s", nodeID, chunkNum, filename)
+					metadata.Chunks[chunkNum] = append(nodes[:i], nodes[i+1:]...)
 					affectedChunks[filename] = append(affectedChunks[filename], chunkNum)
 					break
 				}
@@ -200,22 +205,37 @@ func (c *Controller) handleNodeFailure(nodeID string) {
 	}
 
 	// Trigger re-replication for affected chunks
+	log.Printf("Node %s was responsible for %d chunks across %d files",
+		nodeID, countTotalChunks(affectedChunks), len(affectedChunks))
 	for filename, chunks := range affectedChunks {
 		for _, chunkNum := range chunks {
+			log.Printf("Triggering re-replication for chunk %d of file %s", chunkNum, filename)
 			go c.replicateChunk(filename, chunkNum)
 		}
 	}
 }
 
+// countTotalChunks counts the total number of chunks in the affected chunks map
+func countTotalChunks(affectedChunks map[string][]int) int {
+	count := 0
+	for _, chunks := range affectedChunks {
+		count += len(chunks)
+	}
+	return count
+}
+
 // maintainReplication periodically checks if all chunks have the required number of replicas
 func (c *Controller) maintainReplication() {
-	ticker := time.NewTicker(1 * time.Minute)
+	// Reduced from 1 minute to 10 seconds for faster recovery during testing
+	ticker := time.NewTicker(10 * time.Second)
 	for range ticker.C {
 		c.mu.RLock()
 		// Check replication level of all chunks
 		for filename, metadata := range c.files {
 			for chunkNum, nodes := range metadata.Chunks {
 				if len(nodes) < c.replicationFactor {
+					log.Printf("Replication check: file %s chunk %d has %d replicas, need %d",
+						filename, chunkNum, len(nodes), c.replicationFactor)
 					go c.replicateChunk(filename, chunkNum)
 				}
 			}
@@ -246,28 +266,32 @@ func (c *Controller) replicateChunk(filename string, chunkNum int) {
 	// If we already have enough replicas, no need to replicate
 	if len(currentNodes) >= c.replicationFactor {
 		c.mu.Unlock()
+		log.Printf("Chunk %d of file %s already has sufficient replicas (%d)",
+			chunkNum, filename, len(currentNodes))
 		return
 	}
 	
+	log.Printf("Replicating chunk %d of file %s - current replicas: %d, target: %d",
+		chunkNum, filename, len(currentNodes), c.replicationFactor)
+	
 	// Select new nodes for replication
 	neededReplicas := c.replicationFactor - len(currentNodes)
-	newNodes := c.selectStorageNodes(metadata.ChunkSize)
+	log.Printf("Need %d additional replicas for chunk %d of file %s",
+		neededReplicas, chunkNum, filename)
 	
-	// Filter out nodes that already have the chunk
-	var availableNodes []string
-	for _, node := range newNodes {
+	// Get all available nodes
+	availableNodes := make([]string, 0)
+	for nodeID := range c.nodes {
+		// Check if this node already has the chunk
 		hasChunk := false
 		for _, existingNode := range currentNodes {
-			if node == existingNode {
+			if nodeID == existingNode {
 				hasChunk = true
 				break
 			}
 		}
 		if !hasChunk {
-			availableNodes = append(availableNodes, node)
-			if len(availableNodes) >= neededReplicas {
-				break
-			}
+			availableNodes = append(availableNodes, nodeID)
 		}
 	}
 	
@@ -275,6 +299,14 @@ func (c *Controller) replicateChunk(filename string, chunkNum int) {
 		c.mu.Unlock()
 		log.Printf("Cannot replicate chunk: no available nodes")
 		return
+	}
+	
+	log.Printf("Found %d available nodes for replication", len(availableNodes))
+	
+	// Select nodes for replication (up to the number needed)
+	selectedNodes := availableNodes
+	if len(selectedNodes) > neededReplicas {
+		selectedNodes = selectedNodes[:neededReplicas]
 	}
 	
 	// Get a source node that has the chunk
@@ -286,13 +318,15 @@ func (c *Controller) replicateChunk(filename string, chunkNum int) {
 	sourceNode := currentNodes[0]
 	
 	// Update metadata with new nodes
-	for _, node := range availableNodes {
+	for _, node := range selectedNodes {
 		metadata.Chunks[chunkNum] = append(metadata.Chunks[chunkNum], node)
+		log.Printf("Added node %s as a replica for chunk %d of file %s",
+			node, chunkNum, filename)
 	}
 	c.mu.Unlock()
 	
 	log.Printf("Replicating chunk %d of file %s from %s to %v",
-			   chunkNum, filename, sourceNode, availableNodes)
+		chunkNum, filename, sourceNode, selectedNodes)
 	
 	// Coordinate replication by instructing the source node to send the chunk to new nodes
 	// In a production system, we would implement the actual coordination here
@@ -351,7 +385,7 @@ func (c *Controller) replicateChunk(filename string, chunkNum int) {
 	}
 	
 	// Now send the chunk to each new node
-	for _, newNode := range availableNodes {
+	for _, newNode := range selectedNodes {
 		go func(node string) {
 			// Connect to new node
 			nodeAddr := node

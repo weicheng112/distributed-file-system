@@ -43,6 +43,38 @@ func (c *Controller) handleHeartbeat(data []byte) error {
 	// Process any new files reported
 	for _, filename := range heartbeat.NewFiles {
 		log.Printf("Node %s reported new file: %s", heartbeat.NodeId, filename)
+		
+		// Update the node's ReplicatedChunks map
+		fileMetadata, exists := c.files[filename]
+		if exists {
+			// Find chunks of this file stored on this node
+			for chunkNum, nodes := range fileMetadata.Chunks {
+				for _, nodeID := range nodes {
+					if nodeID == heartbeat.NodeId {
+						// This chunk is stored on this node
+						if _, exists := node.ReplicatedChunks[filename]; !exists {
+							node.ReplicatedChunks[filename] = []int{}
+						}
+						
+						// Check if this chunk is already in the list
+						chunkExists := false
+						for _, existingChunk := range node.ReplicatedChunks[filename] {
+							if existingChunk == chunkNum {
+								chunkExists = true
+								break
+							}
+						}
+						
+						// Add the chunk if it doesn't exist
+						if !chunkExists {
+							node.ReplicatedChunks[filename] = append(node.ReplicatedChunks[filename], chunkNum)
+							log.Printf("Updated node %s ReplicatedChunks: added chunk %d of file %s",
+								heartbeat.NodeId, chunkNum, filename)
+						}
+					}
+				}
+			}
+		}
 	}
 
 	return nil
@@ -97,6 +129,34 @@ func (c *Controller) handleStorageRequest(data []byte) ([]byte, error) {
 	}
 
 
+	// Print the metadata map for the file
+	log.Printf("File %s metadata:", request.Filename)
+	log.Printf("  Size: %d bytes", request.FileSize)
+	log.Printf("  Chunk Size: %d bytes", request.ChunkSize)
+	log.Printf("  Number of Chunks: %d", numChunks)
+	log.Printf("  Chunk Placements:")
+	for chunkNum, nodes := range c.files[request.Filename].Chunks {
+		log.Printf("    Chunk %d: %v", chunkNum, nodes)
+	}
+	
+	// Print node information
+	log.Println("Storage Node Information:")
+	for nodeID, info := range c.nodes {
+		log.Printf("  Node: %s", nodeID)
+		log.Printf("    Address: %s", info.Address)
+		log.Printf("    Free Space: %d bytes (%.2f GB)", info.FreeSpace, float64(info.FreeSpace)/(1024*1024*1024))
+		log.Printf("    Requests Handled: %d", info.RequestsHandled)
+		log.Printf("    Last Heartbeat: %s", info.LastHeartbeat.Format(time.RFC3339))
+		
+		// Print chunks stored on this node
+		log.Printf("    Chunks Stored:")
+		totalChunks := 0
+		for filename, chunks := range info.ReplicatedChunks {
+			log.Printf("      File: %s, Chunks: %v", filename, chunks)
+			totalChunks += len(chunks)
+		}
+		log.Printf("    Total Chunks: %d", totalChunks)
+	}
 	// Serialize response
 	responseData, err := proto.Marshal(response)
 	if err != nil {
@@ -259,6 +319,25 @@ func (c *Controller) handleNodeStatusRequest(data []byte) ([]byte, error) {
 	}
 
 	response.TotalSpace = totalSpace
+
+
+	log.Println("Storage Node Information:")
+	for nodeID, info := range c.nodes {
+		log.Printf("  Node: %s", nodeID)
+		log.Printf("    Address: %s", info.Address)
+		log.Printf("    Free Space: %d bytes (%.2f GB)", info.FreeSpace, float64(info.FreeSpace)/(1024*1024*1024))
+		log.Printf("    Requests Handled: %d", info.RequestsHandled)
+		log.Printf("    Last Heartbeat: %s", info.LastHeartbeat.Format(time.RFC3339))
+		
+		// Print chunks stored on this node
+		log.Printf("    Chunks Stored:")
+		totalChunks := 0
+		for filename, chunks := range info.ReplicatedChunks {
+			log.Printf("      File: %s, Chunks: %v", filename, chunks)
+			totalChunks += len(chunks)
+		}
+		log.Printf("    Total Chunks: %d", totalChunks)
+	}
 
 	// Serialize response
 	responseData, err := proto.Marshal(response)
