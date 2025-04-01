@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"dfs/common"
 	pb "dfs/proto"
 
 	"google.golang.org/protobuf/proto"
@@ -41,19 +42,26 @@ func (c *Controller) handleHeartbeat(data []byte) error {
 	node.LastHeartbeat = time.Now()
 
 	// Process any new files reported
+	log.Printf("Node %s reported %d new files: %v", heartbeat.NodeId, len(heartbeat.NewFiles), heartbeat.NewFiles)
+	
 	for _, filename := range heartbeat.NewFiles {
-		log.Printf("Node %s reported new file: %s", heartbeat.NodeId, filename)
+		log.Printf("Processing reported file: %s from node %s (Address: %s)", filename, heartbeat.NodeId, node.Address)
 		
 		// Update the node's ReplicatedChunks map
 		fileMetadata, exists := c.files[filename]
 		if exists {
+			log.Printf("File %s exists in controller's files map with %d chunks", filename, len(fileMetadata.Chunks))
 			// Find chunks of this file stored on this node
 			for chunkNum, nodes := range fileMetadata.Chunks {
+				log.Printf("  Checking chunk %d which is stored on nodes: %v", chunkNum, nodes)
 				for _, storedNode := range nodes {
+					log.Printf("  Comparing stored node %s with reporting node %s (Address: %s)", storedNode, heartbeat.NodeId, node.Address)
 					// Match against both the node ID and the node address
 					if storedNode == heartbeat.NodeId || storedNode == node.Address {
+						log.Printf("  Match found! Node %s has chunk %d of file %s", heartbeat.NodeId, chunkNum, filename)
 						// This chunk is stored on this node
 						if _, exists := node.ReplicatedChunks[filename]; !exists {
+							log.Printf("  Creating new entry for file %s in node's ReplicatedChunks map", filename)
 							node.ReplicatedChunks[filename] = []int{}
 						}
 						
@@ -69,10 +77,47 @@ func (c *Controller) handleHeartbeat(data []byte) error {
 						// Add the chunk if it doesn't exist
 						if !chunkExists {
 							node.ReplicatedChunks[filename] = append(node.ReplicatedChunks[filename], chunkNum)
-							log.Printf("Updated node %s ReplicatedChunks: added chunk %d of file %s",
+							log.Printf("  Updated node %s ReplicatedChunks: added chunk %d of file %s",
 								heartbeat.NodeId, chunkNum, filename)
+						} else {
+							log.Printf("  Chunk %d of file %s already exists in node's ReplicatedChunks map", chunkNum, filename)
 						}
 					}
+				}
+			}
+		} else {
+			// File doesn't exist in the controller's files map
+			// Create a new entry for this file
+			log.Printf("File %s does not exist in controller's files map, creating new entry", filename)
+			log.Printf("Creating new file entry for %s reported by node %s", filename, heartbeat.NodeId)
+			
+			// Create a new file metadata entry
+			c.files[filename] = &FileMetadata{
+				Size:      0, // We don't know the size yet
+				ChunkSize: int(common.DefaultChunkSize),
+				Chunks:    make(map[int][]string),
+			}
+			// Add the node to the list of nodes that have chunk 0 of this file
+			c.files[filename].Chunks[0] = []string{node.Address}
+			log.Printf("Added node %s (Address: %s) to list of nodes for chunk 0 of file %s", heartbeat.NodeId, node.Address, filename)
+			
+			
+			// Update the node's ReplicatedChunks map
+			if _, exists := node.ReplicatedChunks[filename]; !exists {
+				log.Printf("Creating new entry for file %s in node's ReplicatedChunks map", filename)
+				node.ReplicatedChunks[filename] = []int{}
+			}
+			
+			// Add chunk 0 to the node's ReplicatedChunks map
+			node.ReplicatedChunks[filename] = append(node.ReplicatedChunks[filename], 0)
+			log.Printf("Updated node %s ReplicatedChunks: added chunk 0 of file %s", heartbeat.NodeId, filename)
+			
+			// Log the current state of the controller's files map
+			log.Printf("Controller's files map now contains %d files", len(c.files))
+			for fname, meta := range c.files {
+				log.Printf("  File: %s, Chunks: %d", fname, len(meta.Chunks))
+				for chunkNum, nodes := range meta.Chunks {
+					log.Printf("    Chunk %d: %v", chunkNum, nodes)
 				}
 			}
 		}
@@ -340,6 +385,18 @@ func (c *Controller) handleNodeStatusRequest(data []byte) ([]byte, error) {
 
 
 	log.Println("Storage Node Information:")
+	log.Printf("Controller has %d nodes registered", len(c.nodes))
+	
+	// Log the current state of the controller's files map
+	log.Printf("Controller's files map contains %d files", len(c.files))
+	for filename, meta := range c.files {
+		log.Printf("  File: %s, Size: %d, ChunkSize: %d, Chunks: %d",
+			filename, meta.Size, meta.ChunkSize, len(meta.Chunks))
+		for chunkNum, nodes := range meta.Chunks {
+			log.Printf("    Chunk %d stored on nodes: %v", chunkNum, nodes)
+		}
+	}
+	
 	for nodeID, info := range c.nodes {
 		log.Printf("  Node: %s", nodeID)
 		log.Printf("    Address: %s", info.Address)
@@ -348,13 +405,38 @@ func (c *Controller) handleNodeStatusRequest(data []byte) ([]byte, error) {
 		log.Printf("    Last Heartbeat: %s", info.LastHeartbeat.Format(time.RFC3339))
 		
 		// Print chunks stored on this node
-		log.Printf("    Chunks Stored:")
+		log.Printf("    Chunks Stored (from ReplicatedChunks map):")
 		totalChunks := 0
-		for filename, chunks := range info.ReplicatedChunks {
-			log.Printf("      File: %s, Chunks: %v", filename, chunks)
-			totalChunks += len(chunks)
+		if info.ReplicatedChunks == nil {
+			log.Printf("      ReplicatedChunks map is nil!")
+		} else if len(info.ReplicatedChunks) == 0 {
+			log.Printf("      ReplicatedChunks map is empty")
+		} else {
+			for filename, chunks := range info.ReplicatedChunks {
+				log.Printf("      File: %s, Chunks: %v", filename, chunks)
+				totalChunks += len(chunks)
+			}
 		}
 		log.Printf("    Total Chunks: %d", totalChunks)
+		
+		// Cross-check with the controller's files map
+		log.Printf("    Cross-checking with controller's files map:")
+		crossCheckTotal := 0
+		for filename, meta := range c.files {
+			nodeChunks := []int{}
+			for chunkNum, nodes := range meta.Chunks {
+				for _, node := range nodes {
+					if node == nodeID || node == info.Address {
+						nodeChunks = append(nodeChunks, chunkNum)
+						crossCheckTotal++
+					}
+				}
+			}
+			if len(nodeChunks) > 0 {
+				log.Printf("      File: %s, Chunks: %v", filename, nodeChunks)
+			}
+		}
+		log.Printf("    Total Chunks (cross-check): %d", crossCheckTotal)
 	}
 
 	// Serialize response
