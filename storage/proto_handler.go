@@ -16,6 +16,54 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// getOutboundIP gets the preferred outbound IP of this machine
+func getOutboundIP() string {
+	// Method 1: Try to get the IP by creating a UDP connection (doesn't actually connect)
+	conn, err := net.Dial("udp", "8.8.8.8:53")
+	if err == nil {
+		defer conn.Close()
+		localAddr := conn.LocalAddr().(*net.UDPAddr)
+		return localAddr.IP.String()
+	}
+	log.Printf("Failed to determine outbound IP via UDP: %v", err)
+	
+	// Method 2: Try to get the IP by listing network interfaces
+	ifaces, err := net.Interfaces()
+	if err == nil {
+		for _, iface := range ifaces {
+			// Skip loopback and down interfaces
+			if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+				continue
+			}
+			
+			addrs, err := iface.Addrs()
+			if err != nil {
+				continue
+			}
+			
+			for _, addr := range addrs {
+				switch v := addr.(type) {
+				case *net.IPNet:
+					if !v.IP.IsLoopback() && v.IP.To4() != nil {
+						return v.IP.String()
+					}
+				}
+			}
+		}
+	}
+	log.Printf("Failed to determine outbound IP via network interfaces: %v", err)
+	
+	// Method 3: Fallback to hostname
+	hostname, err := os.Hostname()
+	if err == nil {
+		log.Printf("Current IP Addr %s", hostname)
+		return hostname
+	}
+	
+	// Last resort
+	return "localhost"
+}
+
 // We're now using the Protocol Buffer generated types from dfs/proto
 
 // connectToController establishes a connection to the controller
@@ -56,8 +104,12 @@ func (n *StorageNode) sendHeartbeat() error {
 	}
 
 	// Create heartbeat message
+	// Get the IP address instead of hostname for better network addressability
+	ipAddress := getOutboundIP()
+	// log.Printf("Current IP Addr %s", ipAddress)
 	heartbeat := &pb.Heartbeat{
 		NodeId:           n.nodeID,
+		NodeHostname:     ipAddress,
 		FreeSpace:        freeSpace,
 		RequestsProcessed: n.requestsHandled,
 		NewFiles:         n.getNewFiles(),
@@ -158,7 +210,10 @@ func (n *StorageNode) forwardChunk(nodeID string, filename string, chunkNum uint
 	// Connect to replica node
 	// Ensure the node address includes the hostname
 	nodeAddr := nodeID
+	// The controller should now provide the full address (hostname:port)
+	// If it doesn't contain a colon, fall back to the old behavior
 	if !strings.Contains(nodeAddr, ":") {
+		log.Printf("Warning: Node address %s does not contain a hostname, falling back to localhost", nodeAddr)
 		nodeAddr = "localhost:" + nodeAddr
 	}
 	
@@ -229,7 +284,10 @@ func (n *StorageNode) repairChunk(filename string, chunkNum int) error {
 		// Connect to replica
 		// Ensure the node address includes the hostname
 		nodeAddr := replicaNode
+		// The controller should now provide the full address (hostname:port)
+		// If it doesn't contain a colon, fall back to the old behavior
 		if !strings.Contains(nodeAddr, ":") {
+			log.Printf("Warning: Node address %s does not contain a hostname, falling back to localhost", nodeAddr)
 			nodeAddr = "localhost:" + nodeAddr
 		}
 		

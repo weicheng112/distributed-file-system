@@ -188,16 +188,60 @@ func (c *Controller) handleNodeFailure(nodeID string) {
 
 	log.Printf("Processing failure of node %s", nodeID)
 
+	// Get the node's address and replicated chunks if it exists
+	failedNodeInfo, exists := c.nodes[nodeID]
+	var failedNodeAddr string
+	if exists {
+		failedNodeAddr = failedNodeInfo.Address
+		log.Printf("Failed node address: %s", failedNodeAddr)
+		
+		// Log the chunks that were stored on this node according to the node's ReplicatedChunks map
+		log.Printf("Chunks stored on node %s according to its ReplicatedChunks map:", nodeID)
+		for filename, chunks := range failedNodeInfo.ReplicatedChunks {
+			log.Printf("  File: %s, Chunks: %v", filename, chunks)
+		}
+	} else {
+		// If the node info doesn't exist, use the nodeID as the address
+		failedNodeAddr = nodeID
+		log.Printf("Failed node address: %s (node info not found)", failedNodeAddr)
+	}
+
 	// Find all chunks that were stored on the failed node
 	affectedChunks := make(map[string][]int) // filename -> chunk numbers
+	
+	// First, check the node's ReplicatedChunks map if it exists
+	if exists && failedNodeInfo.ReplicatedChunks != nil {
+		for filename, chunks := range failedNodeInfo.ReplicatedChunks {
+			affectedChunks[filename] = chunks
+			log.Printf("Adding chunks %v of file %s to affected chunks from ReplicatedChunks", chunks, filename)
+		}
+	}
+	
+	// Then, check the file metadata
+	log.Printf("Checking file metadata for chunks stored on node %s or %s", nodeID, failedNodeAddr)
 	for filename, metadata := range c.files {
+		log.Printf("Checking file %s", filename)
 		for chunkNum, nodes := range metadata.Chunks {
+			log.Printf("  Chunk %d is stored on nodes: %v", chunkNum, nodes)
 			for i, node := range nodes {
-				if node == nodeID {
+				// Match against the node ID, the node address, or if the address contains the node ID
+				if node == nodeID || node == failedNodeAddr || strings.Contains(node, ":"+nodeID) {
 					// Remove the failed node from the list
-					log.Printf("Removing node %s from chunk %d of file %s", nodeID, chunkNum, filename)
+					log.Printf("  Removing node %s from chunk %d of file %s", node, chunkNum, filename)
 					metadata.Chunks[chunkNum] = append(nodes[:i], nodes[i+1:]...)
-					affectedChunks[filename] = append(affectedChunks[filename], chunkNum)
+					
+					// Add to affected chunks if not already there
+					found := false
+					for _, c := range affectedChunks[filename] {
+						if c == chunkNum {
+							found = true
+							break
+						}
+					}
+					if !found {
+						affectedChunks[filename] = append(affectedChunks[filename], chunkNum)
+						log.Printf("  Adding chunk %d of file %s to affected chunks", chunkNum, filename)
+					}
 					break
 				}
 			}
@@ -281,11 +325,12 @@ func (c *Controller) replicateChunk(filename string, chunkNum int) {
 	
 	// Get all available nodes
 	availableNodes := make([]string, 0)
-	for nodeID := range c.nodes {
+	for nodeID, nodeInfo := range c.nodes {
 		// Check if this node already has the chunk
 		hasChunk := false
 		for _, existingNode := range currentNodes {
-			if nodeID == existingNode {
+			// Match against the node ID, the node address, or if the address contains the node ID
+			if nodeID == existingNode || nodeInfo.Address == existingNode || strings.Contains(existingNode, ":"+nodeID) {
 				hasChunk = true
 				break
 			}
@@ -335,10 +380,20 @@ func (c *Controller) replicateChunk(filename string, chunkNum int) {
 	// 2. Sending it to each of the new nodes
 	
 	// Connect to source node
-	sourceAddr := sourceNode
-	if !strings.Contains(sourceAddr, ":") {
-		sourceAddr = "localhost:" + sourceAddr
+	// Get the full address from the NodeInfo object
+	c.mu.RLock()
+	sourceNodeInfo, exists := c.nodes[sourceNode]
+	var sourceAddr string
+	if exists {
+		sourceAddr = sourceNodeInfo.Address
+	} else {
+		// If the node info doesn't exist (which shouldn't happen), fall back to the old behavior
+		sourceAddr = sourceNode
+		if !strings.Contains(sourceAddr, ":") {
+			sourceAddr = "localhost:" + sourceAddr
+		}
 	}
+	c.mu.RUnlock()
 	
 	conn, err := net.Dial("tcp", sourceAddr)
 	if err != nil {
@@ -388,10 +443,20 @@ func (c *Controller) replicateChunk(filename string, chunkNum int) {
 	for _, newNode := range selectedNodes {
 		go func(node string) {
 			// Connect to new node
-			nodeAddr := node
-			if !strings.Contains(nodeAddr, ":") {
-				nodeAddr = "localhost:" + nodeAddr
+			// Get the full address from the NodeInfo object
+			c.mu.RLock()
+			nodeInfo, exists := c.nodes[node]
+			var nodeAddr string
+			if exists {
+				nodeAddr = nodeInfo.Address
+			} else {
+				// If the node info doesn't exist (which shouldn't happen), fall back to the old behavior
+				nodeAddr = node
+				if !strings.Contains(nodeAddr, ":") {
+					nodeAddr = "localhost:" + nodeAddr
+				}
 			}
+			c.mu.RUnlock()
 			
 			conn, err := net.Dial("tcp", nodeAddr)
 			if err != nil {

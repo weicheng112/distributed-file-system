@@ -7,9 +7,11 @@ option go_package = "./proto";
 // Message for heartbeat from storage node to controller
 message Heartbeat {
   string node_id = 1;
-  uint64 free_space = 2;  // Available space in bytes
-  uint64 requests_processed = 3;
-  repeated string new_files = 4;  // Optional: new files stored since last heartbeat
+  string node_hostname = 2;
+  uint64 free_space = 3;  // Available space in bytes
+  
+  uint64 requests_processed = 4;
+  repeated string new_files = 5;  // Optional: new files stored since last heartbeat
 }
 
 // Message for storage request from client to controller

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"strings"
 
@@ -77,7 +78,11 @@ func (c *Client) storeChunk(filename string, chunkNum int, data []byte, nodes []
 	// Connect to primary storage node
 	// Ensure the node address includes the hostname
 	nodeAddr := nodes[0]
+	log.Printf("Node Addr:  %s", nodeAddr)
+	// The controller should now provide the full address (hostname:port)
+	// If it doesn't contain a colon, fall back to the old behavior
 	if !strings.Contains(nodeAddr, ":") {
+		log.Printf("Warning: Node address %s does not contain a hostname, falling back to localhost", nodeAddr)
 		nodeAddr = "localhost:" + nodeAddr
 	}
 	
@@ -200,7 +205,10 @@ func (c *Client) retrieveChunkFromNode(filename string, chunkNum int, node strin
 	// Connect to storage node
 	// Ensure the node address includes the hostname
 	nodeAddr := node
+	// The controller should now provide the full address (hostname:port)
+	// If it doesn't contain a colon, fall back to the old behavior
 	if !strings.Contains(nodeAddr, ":") {
+		log.Printf("Warning: Node address %s does not contain a hostname, falling back to localhost", nodeAddr)
 		nodeAddr = "localhost:" + nodeAddr
 	}
 	

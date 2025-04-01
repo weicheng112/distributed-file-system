@@ -28,11 +28,11 @@ func (c *Controller) handleHeartbeat(data []byte) error {
 		// This is a new node
 		node = &NodeInfo{
 			ID:               heartbeat.NodeId,
-			Address:          "localhost:" + heartbeat.NodeId, // Prepend localhost to make a valid address
+			Address:          heartbeat.NodeHostname + ":" + heartbeat.NodeId,
 			ReplicatedChunks: make(map[string][]int),
 		}
 		c.nodes[heartbeat.NodeId] = node
-		log.Printf("New node joined: %s", heartbeat.NodeId)
+		log.Printf("New node joined: %s (Address: %s)", heartbeat.NodeId, node.Address)
 	}
 
 	// Update node status
@@ -49,8 +49,9 @@ func (c *Controller) handleHeartbeat(data []byte) error {
 		if exists {
 			// Find chunks of this file stored on this node
 			for chunkNum, nodes := range fileMetadata.Chunks {
-				for _, nodeID := range nodes {
-					if nodeID == heartbeat.NodeId {
+				for _, storedNode := range nodes {
+					// Match against both the node ID and the node address
+					if storedNode == heartbeat.NodeId || storedNode == node.Address {
 						// This chunk is stored on this node
 						if _, exists := node.ReplicatedChunks[filename]; !exists {
 							node.ReplicatedChunks[filename] = []int{}
@@ -189,10 +190,21 @@ func (c *Controller) handleRetrievalRequest(data []byte) ([]byte, error) {
 	}
 
 	// Add locations for each chunk
-	for chunkNum, nodes := range metadata.Chunks {
+	for chunkNum, nodeIDs := range metadata.Chunks {
+		// Convert node IDs to addresses
+		nodeAddresses := make([]string, len(nodeIDs))
+		for i, nodeID := range nodeIDs {
+			if node, exists := c.nodes[nodeID]; exists {
+				nodeAddresses[i] = node.Address
+			} else {
+				// If node doesn't exist anymore, use the nodeID as fallback
+				nodeAddresses[i] = nodeID
+			}
+		}
+		
 		chunk := &pb.ChunkLocation{
 			ChunkNumber:   uint32(chunkNum),
-			StorageNodes: nodes,
+			StorageNodes: nodeAddresses,
 		}
 		response.Chunks = append(response.Chunks, chunk)
 	}
@@ -209,24 +221,30 @@ func (c *Controller) handleRetrievalRequest(data []byte) ([]byte, error) {
 // selectStorageNodes selects nodes for storing a new chunk
 // It prioritizes nodes with more available space
 func (c *Controller) selectStorageNodes(chunkSize int) []string {
-	var availableNodes []string
+	var availableNodeIDs []string
 	for nodeID, info := range c.nodes {
 		if info.FreeSpace >= uint64(chunkSize) {
-			availableNodes = append(availableNodes, nodeID)
+			availableNodeIDs = append(availableNodeIDs, nodeID)
 		}
 	}
 
 	// Sort nodes by available space (descending)
-	sort.Slice(availableNodes, func(i, j int) bool {
-		return c.nodes[availableNodes[i]].FreeSpace > c.nodes[availableNodes[j]].FreeSpace
+	sort.Slice(availableNodeIDs, func(i, j int) bool {
+		return c.nodes[availableNodeIDs[i]].FreeSpace > c.nodes[availableNodeIDs[j]].FreeSpace
 	})
 
 	// Select top N nodes where N is replication factor
-	if len(availableNodes) > c.replicationFactor {
-		availableNodes = availableNodes[:c.replicationFactor]
+	if len(availableNodeIDs) > c.replicationFactor {
+		availableNodeIDs = availableNodeIDs[:c.replicationFactor]
 	}
 
-	return availableNodes
+	// Convert node IDs to addresses
+	nodeAddresses := make([]string, len(availableNodeIDs))
+	for i, nodeID := range availableNodeIDs {
+		nodeAddresses[i] = c.nodes[nodeID].Address
+	}
+
+	return nodeAddresses
 }
 
 // handleDeleteRequest processes a file deletion request
