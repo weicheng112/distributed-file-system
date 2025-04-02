@@ -80,15 +80,40 @@ func GetAvailableDiskSpace(path string) (uint64, error) {
 		return 0, fmt.Errorf("path is not a directory")
 	}
 	
-	// For a simplified implementation that still provides a realistic value,
-	// we'll allocate a fixed amount of space for each storage node
-	// In a real implementation, you would use OS-specific calls to get actual disk space
+	// Start with a fixed total capacity of 10GB
+	totalCapacity := uint64(10 * 1024 * 1024 * 1024) // 10GB in bytes
 	
-	// Allocate 10GB of space for each storage node
-	// This is just a placeholder value for demonstration purposes
-	var space uint64 = 10 * 1024 * 1024 * 1024 // 10GB in bytes
+	// Calculate space used by stored chunks
+	var usedSpace uint64
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read directory: %v", err)
+	}
 	
-	return space, nil
+	for _, entry := range entries {
+		// Skip directories and non-chunk files
+		if entry.IsDir() || entry.Name() == "metadata.json" || entry.Name() == "reported_files.json" {
+			continue
+		}
+		
+		// Get file info to determine size
+		fileInfo, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		
+		usedSpace += uint64(fileInfo.Size())
+	}
+	
+	// Calculate available space
+	availableSpace := totalCapacity
+	if usedSpace < totalCapacity {
+		availableSpace = totalCapacity - usedSpace
+	} else {
+		availableSpace = 0
+	}
+	
+	return availableSpace, nil
 }
 
 // SplitFile divides a file into chunks of the specified size

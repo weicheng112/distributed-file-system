@@ -188,6 +188,16 @@ func (n *StorageNode) storeChunk(filename string, chunkNum int, data []byte, che
 		Checksum:    checksum,
 	}
 	n.requestsHandled++
+	
+	// Update free space
+	freeSpace, err := common.GetAvailableDiskSpace(n.dataDir)
+	if err != nil {
+		log.Printf("Warning: failed to get free space: %v", err)
+	} else {
+		n.freeSpace = freeSpace
+		log.Printf("Updated free space: %d bytes (%.2f GB)", n.freeSpace, float64(n.freeSpace)/(1024*1024*1024))
+	}
+	
 	n.mu.Unlock()
 
 	// Save metadata to disk
