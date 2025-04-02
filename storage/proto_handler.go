@@ -365,14 +365,82 @@ func (n *StorageNode) getNewFiles() []string {
 	defer n.mu.Unlock()
 
 	newFiles := make([]string, 0)
+	
+	// Ensure reportedFiles map is initialized
+	if n.reportedFiles == nil {
+		n.reportedFiles = make(map[string]bool)
+		log.Printf("Initialized reportedFiles map in getNewFiles")
+	}
+	
+	// Log the current state of the reportedFiles map
+	log.Printf("Current reportedFiles map contains %d entries", len(n.reportedFiles))
+	
+	// Check for new files
 	for chunkKey := range n.chunks {
 		filename := strings.Split(chunkKey, "_")[0]
 		if !n.reportedFiles[filename] {
+			log.Printf("Found new unreported file: %s", filename)
 			newFiles = append(newFiles, filename)
 			n.reportedFiles[filename] = true
+			log.Printf("Marked file %s as reported", filename)
+			
+			// Save the updated reportedFiles map immediately
+			go func() {
+				if err := n.saveReportedFiles(); err != nil {
+					log.Printf("Warning: failed to save reported files: %v", err)
+				}
+			}()
 		}
 	}
+	
+	if len(newFiles) > 0 {
+		log.Printf("Reporting %d new files: %v", len(newFiles), newFiles)
+	} else {
+		log.Printf("No new files to report")
+	}
+	
 	return newFiles
+}
+
+// saveReportedFiles saves just the reported files map to disk
+func (n *StorageNode) saveReportedFiles() error {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	
+	// Ensure reportedFiles map is initialized
+	if n.reportedFiles == nil {
+		n.reportedFiles = make(map[string]bool)
+		log.Printf("Initialized reportedFiles map in saveReportedFiles")
+	}
+	
+	// Save reported files
+	reportedPath := filepath.Join(n.dataDir, "reported_files.json")
+	reportedFile, err := os.Create(reportedPath)
+	if err != nil {
+		return fmt.Errorf("failed to create reported files file: %v", err)
+	}
+	defer reportedFile.Close()
+	
+	// Create a more informative structure to save
+	type ReportedFilesInfo struct {
+		Files     map[string]bool `json:"files"`
+		Timestamp string          `json:"last_updated"`
+		NodeID    string          `json:"node_id"`
+	}
+	
+	info := ReportedFilesInfo{
+		Files:     n.reportedFiles,
+		Timestamp: time.Now().Format(time.RFC3339),
+		NodeID:    n.nodeID,
+	}
+	
+	reportedEncoder := json.NewEncoder(reportedFile)
+	if err := reportedEncoder.Encode(info); err != nil {
+		return fmt.Errorf("failed to encode reported files: %v", err)
+	}
+	
+	log.Printf("Saved reported files info to %s", reportedPath)
+	return nil
 }
 
 // saveMetadata saves the current chunk metadata to disk
@@ -380,6 +448,7 @@ func (n *StorageNode) saveMetadata() error {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
+	// Save chunks metadata
 	metadataPath := filepath.Join(n.dataDir, "metadata.json")
 	file, err := os.Create(metadataPath)
 	if err != nil {
@@ -391,29 +460,120 @@ func (n *StorageNode) saveMetadata() error {
 	if err := encoder.Encode(n.chunks); err != nil {
 		return fmt.Errorf("failed to encode metadata: %v", err)
 	}
+	
+	log.Printf("Saved metadata for %d chunks to %s", len(n.chunks), metadataPath)
 
-	return nil
+	// Also save reported files
+	return n.saveReportedFiles()
 }
 
-// loadMetadata loads chunk metadata from disk
+// loadMetadata loads chunk metadata and reported files from disk
 func (n *StorageNode) loadMetadata() error {
+	// Load chunks metadata
 	metadataPath := filepath.Join(n.dataDir, "metadata.json")
 	
 	// Check if metadata file exists
 	if _, err := os.Stat(metadataPath); os.IsNotExist(err) {
 		// No metadata file, start with empty metadata
-		return nil
+		log.Printf("No metadata file found at %s, starting with empty metadata", metadataPath)
+	} else {
+		file, err := os.Open(metadataPath)
+		if err != nil {
+			return fmt.Errorf("failed to open metadata file: %v", err)
+		}
+		defer file.Close()
+		
+		decoder := json.NewDecoder(file)
+		if err := decoder.Decode(&n.chunks); err != nil {
+			return fmt.Errorf("failed to decode metadata: %v", err)
+		}
+		
+		log.Printf("Loaded metadata for %d chunks", len(n.chunks))
 	}
 	
-	file, err := os.Open(metadataPath)
-	if err != nil {
-		return fmt.Errorf("failed to open metadata file: %v", err)
-	}
-	defer file.Close()
+	// Load reported files
+	reportedPath := filepath.Join(n.dataDir, "reported_files.json")
 	
-	decoder := json.NewDecoder(file)
-	if err := decoder.Decode(&n.chunks); err != nil {
-		return fmt.Errorf("failed to decode metadata: %v", err)
+	// Check if reported files file exists
+	if _, err := os.Stat(reportedPath); os.IsNotExist(err) {
+		// No reported files file, start with empty map
+		log.Printf("No reported files file found at %s, starting with empty map", reportedPath)
+		
+		// Ensure reportedFiles map is initialized
+		if n.reportedFiles == nil {
+			n.reportedFiles = make(map[string]bool)
+			log.Printf("Initialized reportedFiles map")
+		}
+		
+		// If reportExisting is false, mark all existing files as reported to prevent re-reporting them
+		// If reportExisting is true, leave them unmarked so they will be reported
+		if !n.reportExisting {
+			log.Printf("Not reporting existing files on startup (report-existing=false)")
+			for chunkKey := range n.chunks {
+				filename := strings.Split(chunkKey, "_")[0]
+				n.reportedFiles[filename] = true
+				log.Printf("Marked existing file %s as reported (will not be reported to controller)", filename)
+			}
+		} else {
+			log.Printf("Will report existing files on startup (report-existing=true)")
+		}
+		
+		// Save the initial reported files map
+		if err := n.saveReportedFiles(); err != nil {
+			log.Printf("Warning: failed to save initial reported files: %v", err)
+		}
+	} else {
+		reportedFile, err := os.Open(reportedPath)
+		if err != nil {
+			return fmt.Errorf("failed to open reported files file: %v", err)
+		}
+		defer reportedFile.Close()
+		
+		// Try to decode as the new format first
+		type ReportedFilesInfo struct {
+			Files     map[string]bool `json:"files"`
+			Timestamp string          `json:"last_updated"`
+			NodeID    string          `json:"node_id"`
+		}
+		
+		var info ReportedFilesInfo
+		reportedDecoder := json.NewDecoder(reportedFile)
+		if err := reportedDecoder.Decode(&info); err == nil {
+			// Successfully decoded new format
+			if n.reportExisting {
+				// If we're reporting existing files, clear the reported files map
+				n.reportedFiles = make(map[string]bool)
+				log.Printf("Cleared reported files map to report existing files (report-existing=true)")
+			} else {
+				// Otherwise, use the loaded map
+				n.reportedFiles = info.Files
+				log.Printf("Loaded %d reported files from new format (last updated: %s)",
+					len(n.reportedFiles), info.Timestamp)
+			}
+		} else {
+			// Try old format
+			reportedFile.Seek(0, 0) // Reset file position
+			var oldFormat map[string]bool
+			reportedDecoder = json.NewDecoder(reportedFile)
+			if err := reportedDecoder.Decode(&oldFormat); err != nil {
+				return fmt.Errorf("failed to decode reported files: %v", err)
+			}
+			
+			if n.reportExisting {
+				// If we're reporting existing files, clear the reported files map
+				n.reportedFiles = make(map[string]bool)
+				log.Printf("Cleared reported files map to report existing files (report-existing=true)")
+			} else {
+				// Otherwise, use the loaded map
+				n.reportedFiles = oldFormat
+				log.Printf("Loaded %d reported files from old format", len(n.reportedFiles))
+			}
+			
+			// Save in new format
+			if err := n.saveReportedFiles(); err != nil {
+				log.Printf("Warning: failed to save reported files in new format: %v", err)
+			}
+		}
 	}
 	
 	return nil

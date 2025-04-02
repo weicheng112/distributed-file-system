@@ -363,10 +363,12 @@ func (c *Controller) replicateChunk(filename string, chunkNum int) {
 	sourceNode := currentNodes[0]
 	
 	// Update metadata with new nodes
-	for _, node := range selectedNodes {
-		metadata.Chunks[chunkNum] = append(metadata.Chunks[chunkNum], node)
-		log.Printf("Added node %s as a replica for chunk %d of file %s",
-			node, chunkNum, filename)
+	for _, nodeID := range selectedNodes {
+		// Get the full address from the NodeInfo object
+		nodeInfo := c.nodes[nodeID]
+		metadata.Chunks[chunkNum] = append(metadata.Chunks[chunkNum], nodeInfo.Address)
+		log.Printf("Added node %s (Address: %s) as a replica for chunk %d of file %s",
+			nodeID, nodeInfo.Address, chunkNum, filename)
 	}
 	c.mu.Unlock()
 	

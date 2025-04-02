@@ -30,6 +30,7 @@ type StorageNode struct {
 	nodeID         string // Unique identifier for this node (typically IP:port)
 	controllerAddr string // Address of the controller
 	dataDir        string // Directory where chunks are stored
+	reportExisting bool   // Whether to report existing files on startup
 
 	// Connection to controller
 	controllerConn net.Conn
@@ -49,11 +50,12 @@ type StorageNode struct {
 }
 
 // NewStorageNode creates a new storage node instance
-func NewStorageNode(nodeID, controllerAddr, dataDir string) *StorageNode {
+func NewStorageNode(nodeID, controllerAddr, dataDir string, reportExisting bool) *StorageNode {
 	return &StorageNode{
 		nodeID:         nodeID,
 		controllerAddr: controllerAddr,
 		dataDir:        dataDir,
+		reportExisting: reportExisting,
 		chunks:         make(map[string]*ChunkMetadata),
 		reportedFiles:  make(map[string]bool),
 	}
@@ -147,6 +149,8 @@ func (n *StorageNode) handleConnection(conn net.Conn) {
 
 // storeChunk stores a chunk on disk with its checksum
 func (n *StorageNode) storeChunk(filename string, chunkNum int, data []byte, checksum []byte) error {
+	log.Printf("Storing chunk %d of file %s (size: %d bytes)", chunkNum, filename, len(data))
+	
 	// Create chunk file path
 	chunkPath := filepath.Join(n.dataDir, fmt.Sprintf("%s_%d", filename, chunkNum))
 	
@@ -168,7 +172,16 @@ func (n *StorageNode) storeChunk(filename string, chunkNum int, data []byte, che
 
 	// Update metadata
 	n.mu.Lock()
-	n.chunks[fmt.Sprintf("%s_%d", filename, chunkNum)] = &ChunkMetadata{
+	chunkKey := fmt.Sprintf("%s_%d", filename, chunkNum)
+	isNewFile := false
+	
+	// Check if this is a new file that hasn't been reported yet
+	if _, exists := n.reportedFiles[filename]; !exists {
+		isNewFile = true
+		log.Printf("New file detected: %s", filename)
+	}
+	
+	n.chunks[chunkKey] = &ChunkMetadata{
 		Filename:    filename,
 		ChunkNumber: chunkNum,
 		Size:        int64(len(data)),
@@ -180,6 +193,12 @@ func (n *StorageNode) storeChunk(filename string, chunkNum int, data []byte, che
 	// Save metadata to disk
 	if err := n.saveMetadata(); err != nil {
 		log.Printf("Warning: failed to save metadata: %v", err)
+	}
+	
+	log.Printf("Successfully stored chunk %d of file %s at %s", chunkNum, filename, chunkPath)
+	
+	if isNewFile {
+		log.Printf("File %s will be reported in the next heartbeat", filename)
 	}
 
 	return nil
@@ -238,6 +257,7 @@ func main() {
 	nodeID := flag.String("id", "", "Node ID (port number)")
 	controllerAddr := flag.String("controller", "localhost:8000", "Controller address")
 	dataDir := flag.String("data", "", "Data directory path")
+	reportExisting := flag.Bool("report-existing", false, "Whether to report existing files on startup")
 	flag.Parse()
 
 	// Validate arguments
@@ -246,7 +266,7 @@ func main() {
 	}
 
 	// Create and start storage node
-	node := NewStorageNode(*nodeID, *controllerAddr, *dataDir)
+	node := NewStorageNode(*nodeID, *controllerAddr, *dataDir, *reportExisting)
 	if err := node.Start(); err != nil {
 		log.Fatalf("Storage node failed to start: %v", err)
 	}

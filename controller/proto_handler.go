@@ -40,9 +40,11 @@ func (c *Controller) handleHeartbeat(data []byte) error {
 	node.FreeSpace = heartbeat.FreeSpace
 	node.RequestsHandled = heartbeat.RequestsProcessed
 	node.LastHeartbeat = time.Now()
-
-	// Process any new files reported
+// Process any new files reported
+if len(heartbeat.NewFiles) > 0 {
 	log.Printf("Node %s reported %d new files: %v", heartbeat.NodeId, len(heartbeat.NewFiles), heartbeat.NewFiles)
+}
+
 	
 	for _, filename := range heartbeat.NewFiles {
 		log.Printf("Processing reported file: %s from node %s (Address: %s)", filename, heartbeat.NodeId, node.Address)
@@ -53,15 +55,15 @@ func (c *Controller) handleHeartbeat(data []byte) error {
 			log.Printf("File %s exists in controller's files map with %d chunks", filename, len(fileMetadata.Chunks))
 			// Find chunks of this file stored on this node
 			for chunkNum, nodes := range fileMetadata.Chunks {
-				log.Printf("  Checking chunk %d which is stored on nodes: %v", chunkNum, nodes)
+				// log.Printf("  Checking chunk %d which is stored on nodes: %v", chunkNum, nodes)
 				for _, storedNode := range nodes {
-					log.Printf("  Comparing stored node %s with reporting node %s (Address: %s)", storedNode, heartbeat.NodeId, node.Address)
+					// log.Printf("  Comparing stored node %s with reporting node %s (Address: %s)", storedNode, heartbeat.NodeId, node.Address)
 					// Match against both the node ID and the node address
 					if storedNode == heartbeat.NodeId || storedNode == node.Address {
-						log.Printf("  Match found! Node %s has chunk %d of file %s", heartbeat.NodeId, chunkNum, filename)
+						// log.Printf("  Match found! Node %s has chunk %d of file %s", heartbeat.NodeId, chunkNum, filename)
 						// This chunk is stored on this node
 						if _, exists := node.ReplicatedChunks[filename]; !exists {
-							log.Printf("  Creating new entry for file %s in node's ReplicatedChunks map", filename)
+							// log.Printf("  Creating new entry for file %s in node's ReplicatedChunks map", filename)
 							node.ReplicatedChunks[filename] = []int{}
 						}
 						
@@ -77,10 +79,10 @@ func (c *Controller) handleHeartbeat(data []byte) error {
 						// Add the chunk if it doesn't exist
 						if !chunkExists {
 							node.ReplicatedChunks[filename] = append(node.ReplicatedChunks[filename], chunkNum)
-							log.Printf("  Updated node %s ReplicatedChunks: added chunk %d of file %s",
-								heartbeat.NodeId, chunkNum, filename)
+							// log.Printf("  Updated node %s ReplicatedChunks: added chunk %d of file %s",
+							// 	heartbeat.NodeId, chunkNum, filename)
 						} else {
-							log.Printf("  Chunk %d of file %s already exists in node's ReplicatedChunks map", chunkNum, filename)
+							// log.Printf("  Chunk %d of file %s already exists in node's ReplicatedChunks map", chunkNum, filename)
 						}
 					}
 				}
@@ -384,16 +386,32 @@ func (c *Controller) handleNodeStatusRequest(data []byte) ([]byte, error) {
 	response.TotalSpace = totalSpace
 
 
-	log.Println("Storage Node Information:")
-	log.Printf("Controller has %d nodes registered", len(c.nodes))
+	log.Println("===== STORAGE NODE STATUS =====")
+	log.Printf("Controller has %d active nodes registered", len(c.nodes))
 	
-	// Log the current state of the controller's files map
+	// Log the current state of the controller's files map with more detail
+	log.Printf("\n===== FILE REPLICATION STATUS =====")
 	log.Printf("Controller's files map contains %d files", len(c.files))
 	for filename, meta := range c.files {
-		log.Printf("  File: %s, Size: %d, ChunkSize: %d, Chunks: %d",
-			filename, meta.Size, meta.ChunkSize, len(meta.Chunks))
+		totalChunks := len(meta.Chunks)
+		log.Printf("\n  File: %s", filename)
+		log.Printf("    Size: %d bytes (%.2f MB)", meta.Size, float64(meta.Size)/(1024*1024))
+		log.Printf("    ChunkSize: %d bytes (%.2f MB)", meta.ChunkSize, float64(meta.ChunkSize)/(1024*1024))
+		log.Printf("    Total Chunks: %d", totalChunks)
+		log.Printf("    Replication Status:")
+		
+		// Count chunks with different replication levels
+		replicationCounts := make(map[int]int)
 		for chunkNum, nodes := range meta.Chunks {
-			log.Printf("    Chunk %d stored on nodes: %v", chunkNum, nodes)
+			replicationCounts[len(nodes)]++
+			log.Printf("      Chunk %d: %d replicas on nodes: %v", chunkNum, len(nodes), nodes)
+		}
+		
+		// Summary of replication levels
+		log.Printf("    Replication Summary:")
+		for repLevel, count := range replicationCounts {
+			percentage := float64(count) / float64(totalChunks) * 100
+			log.Printf("      %d chunks (%.1f%%) have %d replicas", count, percentage, repLevel)
 		}
 	}
 	
@@ -419,9 +437,11 @@ func (c *Controller) handleNodeStatusRequest(data []byte) ([]byte, error) {
 		}
 		log.Printf("    Total Chunks: %d", totalChunks)
 		
-		// Cross-check with the controller's files map
+		// Cross-check with the controller's files map with more detailed information
 		log.Printf("    Cross-checking with controller's files map:")
 		crossCheckTotal := 0
+		fileChunks := make(map[string][]int)
+		
 		for filename, meta := range c.files {
 			nodeChunks := []int{}
 			for chunkNum, nodes := range meta.Chunks {
@@ -433,9 +453,22 @@ func (c *Controller) handleNodeStatusRequest(data []byte) ([]byte, error) {
 				}
 			}
 			if len(nodeChunks) > 0 {
-				log.Printf("      File: %s, Chunks: %v", filename, nodeChunks)
+				fileChunks[filename] = nodeChunks
 			}
 		}
+		
+		// Print detailed information about which files and chunks this node is responsible for
+		if len(fileChunks) > 0 {
+			log.Printf("    This node is responsible for chunks in %d files:", len(fileChunks))
+			for filename, chunks := range fileChunks {
+				percentage := float64(len(chunks)) / float64(len(c.files[filename].Chunks)) * 100
+				log.Printf("      File: %s - %d/%d chunks (%.1f%%): %v",
+					filename, len(chunks), len(c.files[filename].Chunks), percentage, chunks)
+			}
+		} else {
+			log.Printf("    This node is not responsible for any chunks")
+		}
+		
 		log.Printf("    Total Chunks (cross-check): %d", crossCheckTotal)
 	}
 
