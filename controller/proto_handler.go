@@ -143,9 +143,18 @@ func (c *Controller) handleStorageRequest(data []byte) ([]byte, error) {
 	if _, exists := c.files[request.Filename]; exists {
 		return nil, fmt.Errorf("file already exists")
 	}
+	
+	// Enforce minimum chunk size to prevent system overload
+	const minChunkSize = 1024 * 1024 // 1MB minimum
+	chunkSize := request.ChunkSize
+	if chunkSize < minChunkSize {
+		log.Printf("Warning: Client requested chunk size %d is too small. Using minimum size of %d bytes (1MB) instead.",
+			chunkSize, minChunkSize)
+		chunkSize = minChunkSize
+	}
 
 	// Calculate number of chunks needed
-	numChunks := (request.FileSize + uint64(request.ChunkSize) - 1) / uint64(request.ChunkSize)
+	numChunks := (request.FileSize + uint64(chunkSize) - 1) / uint64(chunkSize)
 
 	// Create chunk placements
 	response := &pb.StorageResponse{
@@ -169,7 +178,7 @@ func (c *Controller) handleStorageRequest(data []byte) ([]byte, error) {
 		if _, exists := c.files[request.Filename]; !exists {
 			c.files[request.Filename] = &FileMetadata{
 				Size:      int64(request.FileSize),
-				ChunkSize: int(request.ChunkSize),
+				ChunkSize: int(chunkSize), // Use the potentially adjusted chunk size
 				Chunks:    make(map[int][]string),
 			}
 		}

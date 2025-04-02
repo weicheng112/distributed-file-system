@@ -211,6 +211,14 @@ func (c *Client) runInteractive() {
 					fmt.Printf("Invalid chunk size: %v\n", err)
 					continue
 				}
+				
+				// Enforce minimum chunk size to prevent system overload
+				const minChunkSize = 1024 * 1024 // 1MB minimum
+				if size < minChunkSize {
+					fmt.Printf("Warning: Chunk size %d is too small. Using minimum size of %d bytes (1MB) instead.\n",
+						size, minChunkSize)
+					size = minChunkSize
+				}
 				chunkSize = size
 			}
 			if err := c.storeFile(parts[1], chunkSize); err != nil {
