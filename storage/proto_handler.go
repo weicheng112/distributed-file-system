@@ -377,7 +377,15 @@ func (n *StorageNode) getNewFiles() []string {
 	
 	// Check for new files
 	for chunkKey := range n.chunks {
-		filename := strings.Split(chunkKey, "_")[0]
+		// Extract the filename correctly, preserving the full filename
+		// The chunk key format is "filename_chunknumber"
+		lastUnderscore := strings.LastIndex(chunkKey, "_")
+		if lastUnderscore == -1 {
+			log.Printf("Warning: Invalid chunk key format: %s", chunkKey)
+			continue
+		}
+		
+		filename := chunkKey[:lastUnderscore]
 		if !n.reportedFiles[filename] {
 			log.Printf("Found new unreported file: %s", filename)
 			newFiles = append(newFiles, filename)
@@ -510,7 +518,14 @@ func (n *StorageNode) loadMetadata() error {
 		if !n.reportExisting {
 			log.Printf("Not reporting existing files on startup (report-existing=false)")
 			for chunkKey := range n.chunks {
-				filename := strings.Split(chunkKey, "_")[0]
+				// Extract the filename correctly, preserving the full filename
+				lastUnderscore := strings.LastIndex(chunkKey, "_")
+				if lastUnderscore == -1 {
+					log.Printf("Warning: Invalid chunk key format: %s", chunkKey)
+					continue
+				}
+				
+				filename := chunkKey[:lastUnderscore]
 				n.reportedFiles[filename] = true
 				log.Printf("Marked existing file %s as reported (will not be reported to controller)", filename)
 			}
